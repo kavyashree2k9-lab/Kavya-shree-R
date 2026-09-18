@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Flappy Tom</title>
+<style>
+  :root{
+    --sky-top:#7ec8ff;
+    --sky-bot:#bfe9ff;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+  html,body{
+    margin:0; padding:0; height:100%; overflow:hidden;
+    background:#111;
+    font-family:'Segoe UI', Arial, sans-serif;
+    touch-action:none;
+    user-select:none;
+  }
+  #gameWrap{
+    position:relative;
+    width:100vw; height:100vh;
+    display:flex; align-items:center; justify-content:center;
+    background:#111;
+  }
+  canvas{
+    display:block;
+    background:linear-gradient(var(--sky-top), var(--sky-bot));
+    touch-action:none;
+    max-width:100vw;
+    max-height:100vh;
+  }
+  #hud{ 
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    pointer-events:none;
+  }
+  #score{
+    position:absolute; top:4%; left:50%; transform:translateX(-50%);
+    font-size:min(9vw, 48px); font-weight:900; color:#fff;
+    -webkit-text-stroke: 2px #543;
+    text-shadow: 3px 3px 0 #543;
+    letter-spacing:2px;
+  }
+  #startScreen, #gameOverScreen{
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    background:rgba(0,0,0,0.45);
+    color:#fff; text-align:center; pointer-events:auto;
+    padding:20px;
+  }
+  #gameOverScreen{ display:none; }
+  .title{
+    font-size:min(12vw,64px); font-weight:900; margin:0 0 10px 0;
+    color:#ffcb3d; -webkit-text-stroke:3px #7a3d00;
+    text-shadow:4px 4px 0 #7a3d00;
+  }
+  .subtitle{
+    font-size:min(4.5vw,20px); margin-bottom:24px; opacity:0.9;
+  }
+  button{
+    font-size:min(6vw,28px); font-weight:800;
+    padding:14px 38px; border-radius:40px;
+    border:4px solid #7a3d00; background:#ffcb3d; color:#5a2d00;
+    cursor:pointer; box-shadow:0 6px 0 #7a3d00;
+    transition:transform 0.05s;
+  }
+  button:active{ transform:translateY(4px); box-shadow:0 2px 0 #7a3d00; }
+  .statLine{ font-size:min(5vw,22px); margin:6px 0; font-weight:600; }
+  .bestBadge{ color:#ffe57f; font-weight:900; }
+  #tomEmoji{ font-size:min(20vw,110px); margin-bottom:6px; }
+  #footerHint{
+    position:absolute; bottom:2%; left:50%; transform:translateX(-50%);
+    color:#fff; font-size:min(3.5vw,15px); opacity:0.75; pointer-events:none;
+  }
+</style>
+</head>
+<body>
+<div id="gameWrap">
+  <canvas id="game"></canvas>
+  <div id="hud">
+    <div id="score">0</div>
+
+    <div id="startScreen">
+      <div id="tomEmoji">🐱</div>
+      <div class="title">FLAPPY TOM</div>
+      <div class="subtitle">Tap / Click / Press Space to flap</div>
+      <button id="startBtn">▶ PLAY</button>
+      <div class="statLine" style="margin-top:18px;">Best: <span id="bestStart" class="bestBadge">0</span></div>
+    </div>
+
+    <div id="gameOverScreen">
+      <div style="font-size:min(10vw,50px); font-weight:900; color:#ff5c5c; -webkit-text-stroke:2px #6b0000; text-shadow:3px 3px 0 #6b0000;">GAME OVER</div>
+      <div class="statLine">Score: <span id="finalScore">0</span></div>
+      <div class="statLine">Best: <span id="bestScore" class="bestBadge">0</span></div>
+      <button id="restartBtn" style="margin-top:16px;">↻ RETRY</button>
+    </div>
+
+    <div id="footerHint">Works on mobile &amp; desktop — tap anywhere or press Space</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const startScreen = document.getElementById('startScreen');
+  const gameOverScreen = document.getElementById('gameOverScreen');
+  const startBtn = document.getElementById('startBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  const finalScoreEl = document.getElementById('finalScore');
+  const bestScoreEl = document.getElementById('bestScore');
+  const bestStartEl = document.getElementById('bestStart');
+
+  // ---- Canvas sizing (responsive, keeps a nice portrait-ish aspect for the game) ----
+  let W, H, DPR;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    const wrapW = window.innerWidth;
+    const wrapH = window.innerHeight;
+    // target aspect similar to classic flappy bird portrait, but adapt to wide screens too
+    let targetAspect = 9/16;
+    let cw, ch;
+    if (wrapW / wrapH > targetAspect) {
+      ch = wrapH;
+      cw = ch * targetAspect;
+      if (cw > wrapW) { cw = wrapW; ch = cw / targetAspect; }
+    } else {
+      cw = wrapW;
+      ch = cw / targetAspect;
+      if (ch > wrapH) { ch = wrapH; cw = ch * targetAspect; }
+    }
+    canvas.style.width = cw + 'px';
+    canvas.style.height = ch + 'px';
+    canvas.width = Math.floor(cw * DPR);
+    canvas.height = Math.floor(ch * DPR);
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    W = cw; H = ch;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---- Game constants (scaled relative to canvas size) ----
+  function S(v){ return v * (W/380); } // scale helper based on reference width 380
+
+  const GRAVITY = 1600;      // px/s^2 (scaled below per frame)
+  const FLAP_VELOCITY = -430;
+  const PIPE_GAP_BASE = 190;
+  const PIPE_WIDTH_BASE = 62;
+  const PIPE_SPEED_BASE = 150;
+  const PIPE_INTERVAL = 1350; // ms
+
+  let best = parseInt(localStorage.getItem('flappyTomBest') || '0', 10);
+  bestStartEl.textContent = best;
+
+  let state = 'start'; // start | playing | over
+  let tom, pipes, score, lastPipeTime, animTime, groundOffset;
+
+  function resetGame(){
+    tom = {
+      x: W*0.28,
+      y: H*0.4,
+      vy: 0,
+      r: S(18),
+      rot: 0
+    };
+    pipes = [];
+    score = 0;
+    lastPipeTime = 0;
+    animTime = 0;
+    groundOffset = 0;
+    scoreEl.textContent = '0';
+  }
+
+  function spawnPipe(){
+    const gap = S(PIPE_GAP_BASE);
+    const margin = S(40);
+    const groundH = S(70);
+    const minY = margin + gap/2;
+    const maxY = H - groundH - margin - gap/2;
+    const centerY = minY + Math.random() * Math.max(10, (maxY - minY));
+    pipes.push({
+      x: W + S(30),
+      w: S(PIPE_WIDTH_BASE),
+      gapY: centerY,
+      gap: gap,
+      passed:false
+    });
+  }
+
+  // ---- Input ----
+  function flap(){
+    if (state === 'start'){
+      startGame();
+      return;
+    }
+    if (state === 'over') return;
+    tom.vy = FLAP_VELOCITY * (W/380 < 1 ? 1 : Math.sqrt(W/380));
+  }
+
+  function handlePointer(e){
+    e.preventDefault();
+    flap();
+  }
+  canvas.addEventListener('pointerdown', handlePointer);
+  document.addEventListener('keydown', function(e){
+    if (e.code === 'Space' || e.code === 'ArrowUp'){
+      e.preventDefault();
+      flap();
+    }
+  });
+
+  startBtn.addEventListener('click', function(e){ e.stopPropagation(); startGame(); });
+  restartBtn.addEventListener('click', function(e){ e.stopPropagation(); startGame(); });
+
+  function startGame(){
+    resetGame();
+    state = 'playing';
+    startScreen.style.display = 'none';
+    gameOverScreen.style.display = 'none';
+  }
+
+  function endGame(){
+    state = 'over';
+    if (score > best){
+      best = score;
+      localStorage.setItem('flappyTomBest', String(best));
+    }
+    finalScoreEl.textContent = score;
+    bestScoreEl.textContent = best;
+    setTimeout(()=>{ gameOverScreen.style.display = 'flex'; }, 350);
+  }
+
+  // ---- Drawing helpers ----
+  function drawBackground(){
+    // clouds (simple parallax)
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = '#ffffff';
+    const t = animTime/1000;
+    for (let i=0;i<4;i++){
+      const cx = ((i*140 - (t*15)%560) + 560) % 560 - 80;
+      const cy = S(40 + i*45 % 160);
+      drawCloud(cx, cy, S(30));
+    }
+    ctx.restore();
+  }
+
+  function drawCloud(x,y,r){
+    ctx.beginPath();
+    ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.arc(x+r*0.8,y+r*0.2,r*0.7,0,Math.PI*2);
+    ctx.arc(x-r*0.8,y+r*0.25,r*0.6,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  function drawGround(){
+    const groundH = S(70);
+    const y = H - groundH;
+    ctx.fillStyle = '#ded17a';
+    ctx.fillRect(0, y, W, groundH);
+    ctx.fillStyle = '#8bc34a';
+    ctx.fillRect(0, y, W, S(14));
+    // stripes
+    ctx.fillStyle = '#c9bb63';
+    const stripeW = S(30);
+    groundOffset = (groundOffset - pipeSpeed()*dtLast/1000) % stripeW;
+    for (let x = groundOffset; x < W; x += stripeW){
+      ctx.fillRect(x, y+S(14), stripeW*0.5, groundH-S(14));
+    }
+  }
+
+  function drawPipe(p){
+    const groundH = S(70);
+    const topH = p.gapY - p.gap/2;
+    const botY = p.gapY + p.gap/2;
+    const botH = (H - groundH) - botY;
+    const capH = S(22);
+    const capOverhang = S(6);
+
+    ctx.fillStyle = '#5fbf4f';
+    ctx.strokeStyle = '#2f6b27';
+    ctx.lineWidth = S(3);
+
+    // top pipe
+    ctx.fillRect(p.x, 0, p.w, topH);
+    ctx.strokeRect(p.x, 0, p.w, topH);
+    ctx.fillRect(p.x-capOverhang, topH-capH, p.w+capOverhang*2, capH);
+    ctx.strokeRect(p.x-capOverhang, topH-capH, p.w+capOverhang*2, capH);
+
+    // bottom pipe
+    ctx.fillRect(p.x, botY, p.w, botH);
+    ctx.strokeRect(p.x, botY, p.w, botH);
+    ctx.fillRect(p.x-capOverhang, botY, p.w+capOverhang*2, capH);
+    ctx.strokeRect(p.x-capOverhang, botY, p.w+capOverhang*2, capH);
+  }
+
+  function drawTom(){
+    ctx.save();
+    ctx.translate(tom.x, tom.y);
+    ctx.rotate(tom.rot);
+    const r = tom.r;
+
+    // body
+    ctx.fillStyle = '#8e9aab';
+    ctx.beginPath();
+    ctx.ellipse(0,0,r*1.15,r,0,0,Math.PI*2);
+    ctx.fill();
+
+    // belly
+    ctx.fillStyle = '#e8e9ec';
+    ctx.beginPath();
+    ctx.ellipse(r*0.15,r*0.2,r*0.65,r*0.55,0,0,Math.PI*2);
+    ctx.fill();
+
+    // ears
+    ctx.fillStyle = '#8e9aab';
+    ctx.beginPath();
+    ctx.moveTo(-r*0.6,-r*0.75);
+    ctx.lineTo(-r*0.95,-r*1.5);
+    ctx.lineTo(-r*0.1,-r*1.05);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(r*0.55,-r*0.85);
+    ctx.lineTo(r*0.95,-r*1.5);
+    ctx.lineTo(r*0.15,-r*1.1);
+    ctx.fill();
+
+    // eyes
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(r*0.35,-r*0.15,r*0.3,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(-r*0.35,-r*0.2,r*0.22,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#222';
+    ctx.beginPath(); ctx.arc(r*0.4,-r*0.13,r*0.13,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(-r*0.3,-r*0.2,r*0.09,0,Math.PI*2); ctx.fill();
+
+    // nose
+    ctx.fillStyle = '#e75480';
+    ctx.beginPath(); ctx.arc(r*0.05,r*0.15,r*0.09,0,Math.PI*2); ctx.fill();
+
+    // ear inner
+    ctx.fillStyle = '#e7a0ab';
+    ctx.beginPath();
+    ctx.moveTo(-r*0.55,-r*0.85);
+    ctx.lineTo(-r*0.75,-r*1.25);
+    ctx.lineTo(-r*0.25,-r*1.0);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function pipeSpeed(){
+    // gentle difficulty ramp
+    const base = S(PIPE_SPEED_BASE);
+    const ramp = Math.min(score * S(3), S(90));
+    return base + ramp;
+  }
+
+  // ---- Update loop ----
+  let lastTime = null;
+  let dtLast = 16;
+
+  function update(dt){
+    animTime += dt;
+    if (state !== 'playing') return;
+
+    const g = GRAVITY * (W/380 < 1 ? 1 : (W/380));
+    tom.vy += g * dt/1000;
+    tom.y += tom.vy * dt/1000;
+    tom.rot = Math.max(-0.5, Math.min(1.3, tom.vy/600));
+
+    const groundH = S(70);
+    if (tom.y + tom.r > H - groundH){
+      tom.y = H - groundH - tom.r;
+      endGame();
+    }
+    if (tom.y - tom.r < 0){
+      tom.y = tom.r;
+      tom.vy = 0;
+    }
+
+    lastPipeTime += dt;
+    if (lastPipeTime > PIPE_INTERVAL){
+      lastPipeTime = 0;
+      spawnPipe();
+    }
+
+    const speed = pipeSpeed();
+    for (let i=pipes.length-1;i>=0;i--){
+      const p = pipes[i];
+      p.x -= speed * dt/1000;
+
+      // collision
+      const withinX = tom.x + tom.r > p.x && tom.x - tom.r < p.x + p.w;
+      if (withinX){
+        const topH = p.gapY - p.gap/2;
+        const botY = p.gapY + p.gap/2;
+        if (tom.y - tom.r*0.75 < topH || tom.y + tom.r*0.75 > botY){
+          endGame();
+        }
+      }
+
+      if (!p.passed && p.x + p.w < tom.x){
+        p.passed = true;
+        score++;
+        scoreEl.textContent = score;
+      }
+
+      if (p.x + p.w < -S(20)){
+        pipes.splice(i,1);
+      }
+    }
+  }
+
+  function render(){
+    ctx.clearRect(0,0,W,H);
+    drawBackground();
+    for (const p of pipes) drawPipe(p);
+    drawGround();
+    if (tom) drawTom();
+  }
+
+  function loop(ts){
+    if (lastTime === null) lastTime = ts;
+    const dt = Math.min(ts - lastTime, 40);
+    dtLast = dt;
+    lastTime = ts;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  resetGame();
+  requestAnimationFrame(loop);
+
+  // Prevent iOS bounce / gesture zoom
+  document.addEventListener('touchmove', function(e){ e.preventDefault(); }, {passive:false});
+  document.addEventListener('gesturestart', function(e){ e.preventDefault(); });
+
+})();
+</script>
+</body>
+</html>
